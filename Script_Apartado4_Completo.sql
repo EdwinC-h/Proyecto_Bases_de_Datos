@@ -259,26 +259,296 @@ from boletos b
 join rutas r on b.id_ruta = r.id_ruta
 group by r.id_ruta;
 
+-- =======================
+-- CREACION DE ROLES
+-- ==========================
+-- 1. Crear Roles (Sin host específico para que sean globales)
+CREATE ROLE 'rol_operador';
+CREATE ROLE 'rol_administrador';
 
--------- Creacion de Roles ------
--------- Rol Operador -----------
-create role rol_operador;
--------- Asignacion de Roles ------
-grant select, insert on flota_de_buses.boletos to rol_operador;
-grant select on flota_de_buses.pasajeros to rol_operador;
-grant select on flota_de_buses.rutas to rol_operador;
-grant select on flota_de_buses.buses to rol_operador;
------------ Rol_administrador -----------
-create role rol_administrador;
------------ Asignacion de roles ----------
-grant all privileges on flota_de_buses.* to rol_administrador;
--------- Creacion de Usuarios ---------
--------- Usuario Operador -------
-create user 'operador'@'localhost'
-identified by 'Operador@2026';
------------ Usuario Administrador ---------
-create user 'admin_flota'@'localhost'
-identified by 'Admin@2026';
--------- Asignacion de los roles a los usuarios ---------
-grant rol_operador to 'operador_bus'@'localhost';
-grant rol_administrador to 'admin_flota'@'localhost';
+-- 2. Asignar privilegios a los ROLES
+GRANT SELECT, INSERT ON flota_de_buses.boletos TO 'rol_operador';
+GRANT SELECT ON flota_de_buses.pasajeros TO 'rol_operador';
+GRANT SELECT ON flota_de_buses.rutas TO 'rol_operador';
+GRANT SELECT ON flota_de_buses.buses TO 'rol_operador';
+
+GRANT ALL PRIVILEGES ON flota_de_buses.* TO 'rol_administrador';
+
+-- 3. Crear Usuarios con el plugin de compatibilidad (por si acaso)
+CREATE USER 'operador'@'localhost' IDENTIFIED WITH mysql_native_password BY 'Operador1234';
+CREATE USER 'admin_flota'@'localhost' IDENTIFIED WITH mysql_native_password BY 'Admin@2026';
+
+-- 4. Unir Roles con Usuarios
+GRANT 'rol_operador' TO 'operador'@'localhost';
+GRANT 'rol_administrador' TO 'admin_flota'@'localhost';
+
+-- 5. LA CLAVE: Hacer que el rol se active solo al entrar
+SET DEFAULT ROLE ALL TO 'operador'@'localhost', 'admin_flota'@'localhost';
+
+-- 6. Guardar cambios
+FLUSH PRIVILEGES;
+
+
+SELECT user, host FROM mysql.user;
+
+-- =========================
+-- CREAR TABLA DE AUDITORIA
+-- =========================
+
+create table auditoria (
+	id_auditoria int primary key auto_increment,
+    tabla varchar(100) not null,
+    operacion varchar(10) not null,
+    id_registro int not null,
+    usuario varchar(100),
+    fecha datetime default current_timestamp,
+    datos_anteriores JSON,
+    datos_nuevos JSON,
+    descripcion text
+);
+
+--  =================================
+-- INDICES PARA MEJORAS DE RENDIMIENTO
+-- ====================================
+
+create index idx_pasajero_email on pasajeros(email);
+create index idx_conductor_cedula on conductores(cedula);
+create index idx_bus_placa on buses(placa);
+create index idx_ruta_origen_destino on rutas( origen, destino);
+create index idx_boleto_pasajero on boletos(id_pasajero);
+create index idx_boleto_ruta on boletos(id_ruta);
+create index idx_boleto_bus on boletos(id_bus);
+create index idx_boleto_fecha on boletos(fecha);
+create index idx_asignacion_ruta on asignaciones(id_ruta);
+create index idx_asignacion_bus on asignaciones(id_bus);
+create index idx_asignacion_conductor on asignaciones(id_conductor);
+
+-- ================================
+-- TRIGGERS PARA AUDIOTORIA
+-- ================================
+
+-- Trigger: insert en pasajeros
+delimiter //
+create trigger tr_auditoria_insert_pasajeros
+after insert on pasajeros
+for each row
+begin
+    insert into auditoria (tabla, operacion, id_registro, usuario, datos_nuevos, descripcion)
+    values (
+        'pasajeros',
+        'insert',
+        new.id_pasajero,
+        user(),
+        json_object('nombre', new.nombre, 'apellido', new.apellido, 'email', new.email),
+        concat('nuevo pasajero registrado: ', new.nombre, ' ', new.apellido)
+    );
+end //
+delimiter ;
+
+-- Trigger: update en pasajeros
+delimiter //
+create trigger tr_auditoria_update_pasajeros
+after update on pasajeros
+for each row
+begin
+    insert into auditoria (tabla, operacion, id_registro, usuario, datos_anteriores, datos_nuevos, descripcion)
+    values (
+        'pasajeros',
+        'update',
+        new.id_pasajero,
+        user(),
+        json_object('nombre', old.nombre, 'apellido', old.apellido, 'email', old.email),
+        json_object('nombre', new.nombre, 'apellido', new.apellido, 'email', new.email),
+        concat('pasajero actualizado: ', old.nombre, ' -> ', new.nombre)
+    );
+end //
+delimiter ;
+
+-- Trigger: delete en pasajeros
+delimiter //
+create trigger tr_auditoria_delete_pasajeros
+after delete on pasajeros
+for each row
+begin
+    insert into auditoria (tabla, operacion, id_registro, usuario, datos_anteriores, descripcion)
+    values (
+        'pasajeros',
+        'delete',
+        old.id_pasajero,
+        user(),
+        json_object('nombre', old.nombre, 'apellido', old.apellido, 'email', old.email),
+        concat('pasajero eliminado: ', old.nombre, ' ', old.apellido)
+    );
+end //
+delimiter ;
+
+-- Trigger: insert en boletos
+delimiter //
+create trigger tr_auditoria_insert_boletos
+after insert on boletos
+for each row
+begin
+    insert into auditoria (tabla, operacion, id_registro, usuario, datos_nuevos, descripcion)
+    values (
+        'boletos',
+        'insert',
+        new.id_boleto,
+        user(),
+        json_object('id_pasajero', new.id_pasajero, 'precio', new.precio, 'asiento', new.asiento),
+        concat('boleto vendido - pasajero id: ', new.id_pasajero, ' - precio: $', new.precio)
+    );
+end //
+delimiter ;
+
+-- Trigger: update en boletos
+delimiter //
+create trigger tr_auditoria_update_boletos
+after update on boletos
+for each row
+begin
+    insert into auditoria (tabla, operacion, id_registro, usuario, datos_anteriores, datos_nuevos, descripcion)
+    values (
+        'boletos',
+        'update',
+        new.id_boleto,
+        user(),
+        json_object('precio', old.precio, 'asiento', old.asiento),
+        json_object('precio', new.precio, 'asiento', new.asiento),
+        concat('boleto actualizado - precio: $', old.precio, ' -> $', new.precio)
+    );
+end //
+delimiter ;
+
+-- Trigger: delete en boletos
+delimiter //
+create trigger tr_auditoria_delete_boletos
+after delete on boletos
+for each row
+begin
+    insert into auditoria (tabla, operacion, id_registro, usuario, datos_anteriores, descripcion)
+    values (
+        'boletos',
+        'delete',
+        old.id_boleto,
+        user(),
+        json_object('id_pasajero', old.id_pasajero, 'precio', old.precio),
+        concat('boleto eliminado - pasajero id: ', old.id_pasajero)
+    );
+end //
+delimiter ;
+
+-- Trigger: insert en buses
+delimiter //
+create trigger tr_auditoria_insert_buses
+after insert on buses
+for each row
+begin
+    insert into auditoria (tabla, operacion, id_registro, usuario, datos_nuevos, descripcion)
+    values (
+        'buses',
+        'insert',
+        new.id_bus,
+        user(),
+        json_object('placa', new.placa, 'modelo', new.modelo, 'capacidad', new.capacidad),
+        concat('nuevo bus registrado: ', new.modelo, ' - placa: ', new.placa)
+    );
+end //
+delimiter ;
+
+-- Trigger: update en buses
+delimiter //
+create trigger tr_auditoria_update_buses
+after update on buses
+for each row
+begin
+    insert into auditoria (tabla, operacion, id_registro, usuario, datos_anteriores, datos_nuevos, descripcion)
+    values (
+        'buses',
+        'update',
+        new.id_bus,
+        user(),
+        json_object('placa', old.placa, 'capacidad', old.capacidad),
+        json_object('placa', new.placa, 'capacidad', new.capacidad),
+        concat('bus actualizado - ', old.placa, ' -> ', new.placa)
+    );
+end //
+delimiter ;
+
+-- Trigger: insert en asignaciones
+delimiter //
+create trigger tr_auditoria_insert_asignaciones
+after insert on asignaciones
+for each row
+begin
+    insert into auditoria (tabla, operacion, id_registro, usuario, datos_nuevos, descripcion)
+    values (
+        'asignaciones',
+        'insert',
+        new.id_asignacion,
+        user(),
+        json_object('id_ruta', new.id_ruta, 'id_bus', new.id_bus, 'id_conductor', new.id_conductor),
+        concat('nueva asignación - ruta: ', new.id_ruta, ', bus: ', new.id_bus, ', conductor: ', new.id_conductor)
+    );
+end //
+delimiter ;
+
+-- ================================
+-- VISTAS PARA AUDITORIA
+-- ================================
+create view vista_auditoria_completa as
+select 
+    a.id_auditoria,
+    a.tabla,
+    a.operacion,
+    a.id_registro,
+    a.usuario,
+    a.fecha,
+    a.descripcion,
+    a.datos_anteriores,
+    a.datos_nuevos
+from auditoria a
+order by a.fecha desc;
+
+create view vista_auditoria_por_tabla as
+select 
+    tabla,
+    operacion,
+    count(*) as total_operaciones,
+    max(fecha) as ultima_operacion
+from auditoria
+group by tabla, operacion
+order by tabla, operacion;
+
+create view vista_auditoria_usuarios as
+select 
+    usuario,
+    tabla,
+    operacion,
+    count(*) as total_operaciones,
+    max(fecha) as ultima_fecha
+from auditoria
+group by usuario, tabla, operacion
+order by usuario, ultima_fecha desc;
+
+drop view vista_auditoria_usuarios;
+-- ================================
+-- CONSULTAS PARA VERIFICAR AUDITORÍA
+-- ================================
+-- ver todos los registros de auditoría
+SELECT * FROM auditoria ORDER BY fecha DESC LIMIT 10;
+
+-- ver auditoría por tabla específica
+SELECT * FROM auditoria WHERE tabla = 'boletos' ORDER BY fecha DESC;
+
+-- ver todas las operaciones de un usuario
+SELECT * FROM auditoria WHERE usuario LIKE '%admin%' ORDER BY fecha DESC;
+
+-- Ver cambios en un registro específico
+SELECT * FROM auditoria WHERE tabla = 'pasajeros' AND id_registro = 1;
+
+-- Resumen de operaciones por tabla
+SELECT * FROM vista_auditoria_por_tabla;
+
+-- Resumen de operaciones por usuario
+SELECT * FROM vista_auditoria_usuarios;
+
