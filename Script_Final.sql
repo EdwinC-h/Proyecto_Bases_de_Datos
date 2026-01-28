@@ -244,7 +244,7 @@ from boletos b
 join pasajeros p on b.id_pasajero = p.id_pasajero
 join rutas r on b.id_ruta = r.id_ruta;
 
------ Subconsulatas -----
+----- Subconsultas -----
 -- pasajeros que han comprado boletos
 select *
 from pasajeros
@@ -319,6 +319,8 @@ create table auditoria (
     datos_nuevos JSON,
     descripcion text
 );
+
+show tables;
 
 --  =================================
 -- INDICES PARA MEJORAS DE RENDIMIENTO
